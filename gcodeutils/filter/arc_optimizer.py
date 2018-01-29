@@ -7,26 +7,30 @@
 # You should have received a copy of the GNU General Public License
 # along with GCodeUtils.  If not, see <http://www.gnu.org/licenses/>.
 
+import cmath
 import logging
 from math import sqrt, sin
-import cmath
+
 from gcodeutils.filter.filter import GCodeFilter
 from gcodeutils.gcoder import Line, move_gcodes, unsplit
+
 
 __author__ = 'Eyck Jentzsch <eyck@jepemuc.de>'
 
 # constraints for the detection algorithm
-MIN_SEGMENTS = 8              # number is segments forming an arc
-MAX_RADIUS = 200              # mm, maximum radius of the detectable circle
-ALIGNMENT_ERROR = 0.015       # 15 µm, max. offset a point might be off of the resulting circle
-PHASE_ERROR = 5*cmath.pi/180  # 5° in radian, max deviation of the angle steps forming a circle
-EXTRUSION_ERROR = 0.15        # 15%, maximum deviation of the extrusion for the segments
-EPSILON = 0.000001            # epsilon for zero comapriosn of float. everything less than will be treated as zero
+MIN_SEGMENTS = 8  # number is segments forming an arc
+# MAX_SEGMENTS = 32             # number of max segments forming an arc
+MAX_RADIUS = 200  # mm, maximum radius of the detectable circle
+ALIGNMENT_ERROR = 0.015  # 15 µm, max. offset a point might be off of the resulting circle
+PHASE_ERROR = 5 * cmath.pi / 180  # 5° in radian, max deviation of the angle steps forming a circle
+EXTRUSION_ERROR = 0.02  # 2%, maximum deviation of the extrusion for the segments
+EPSILON = 0.000001  # epsilon for zero comapriosn of float. everything less than will be treated as zero
 
-EXTRUSION_CORRECTION_LIMIT=0.01 # 1%, if the length of all segments deviates more than this from the legnth of the arc
+EXTRUSION_CORRECTION_LIMIT = 0.01  # 1%, if the length of all segments deviates more than this from the legnth of the arc
                                 # a correction gcode is generated in absolute coordinate mode
 
 logger = logging.getLogger('arc_optimizer')
+
 
 class Point(object):
     """
@@ -74,7 +78,7 @@ class Circle(object):
         self.end = end
 
     def __str__(self):
-        circle_str="Arc(r=%.5f, center=%s from %s to %s" % (self.radius, str(self.center), str(self.start), str(self.end))
+        circle_str = "Arc(r=%.5f, center=%s from %s to %s" % (self.radius, str(self.center), str(self.start), str(self.end))
         return "CCW-" + circle_str if self.direction > 0.0 else "CW-" + circle_str
 
 
@@ -107,13 +111,13 @@ class GCodeArcOptimizerFilter(GCodeFilter):
             diff -= 2 * cmath.pi
         return diff
 
-    def opcode_filter(self, opcode):
-        """
-        default implementation of the opcode filter
-        :param opcode: the gcode of the current line
-        :return: the modified opcode
-        """
-        return opcode
+#     def opcode_filter(self, opcode):
+#         """
+#         default implementation of the opcode filter
+#         :param opcode: the gcode of the current line
+#         :return: the modified opcode
+#         """
+#         return opcode
 
     def parse_gcode(self, gcode, opcode_filter):
         for layer in gcode.all_layers:
@@ -205,7 +209,7 @@ class GCodeArcOptimizerFilter(GCodeFilter):
         :return: a tuple consisting of the bool indication an erroneous circle and the estimated circle
         """
         circle = self.get_circle_least_squares()
-        if circle is None or circle.radius>MAX_RADIUS:
+        if circle is None or circle.radius > MAX_RADIUS:
             return True, circle
         radius_err = self.get_circle_radius_errors(circle)
         if any([error > ALIGNMENT_ERROR for error in radius_err]):
@@ -265,10 +269,18 @@ class GCodeArcOptimizerFilter(GCodeFilter):
             not any([line.e is not None for line in self.queue[1:]])
         valid_f = all([line.current_f == cur_f for line in self.queue[1:]])
         valid_z = all([line.current_z == cur_z for line in self.queue[1:]])
+         
         if not (valid_e and valid_f and valid_z):
             return True, None
         if all_e:
+            error, circle = self.get_circle()
             extrusions = self.get_distances()
+            if not error:
+                theta = extrusions['total']['path'] / circle.radius
+                if (theta >= cmath.pi):
+                    return True, None
+            if extrusions['total']['filament'] < EPSILON:
+                return True, None
             if extrusions['avg']['ratio'] < EPSILON:
                 return True, None
             valid = all(abs((curext / extrusions['avg']['ratio']) - 1) < EXTRUSION_ERROR for curext in
@@ -282,7 +294,7 @@ class GCodeArcOptimizerFilter(GCodeFilter):
         translate a sequence of segments into a circular gcode command
         :return: the gcode command
         """
-        result=[self.queue[0]]
+        result = [self.queue[0]]
         last = self.queue.pop()
         count = len(self.queue)
         end_point = self.queue[-1]
@@ -290,7 +302,7 @@ class GCodeArcOptimizerFilter(GCodeFilter):
         extrusions = self.get_distances()
         op1 = Line()
         result.append(op1)
-        op1.command = "G3" if circle.direction >0 else "G2" # G2 is CW, G3 CCW
+        op1.command = "G3" if circle.direction > 0 else "G2"  # G2 is CW, G3 CCW
         op1.x = round(circle.end.x, 3)
         op1.y = round(circle.end.y, 3)
         op1.i = round(circle.center.x - circle.start.x, 3)
@@ -300,20 +312,21 @@ class GCodeArcOptimizerFilter(GCodeFilter):
             # arc length   b = r·alpha (alpha in radian)
             # chord length s = 2·r·sin(alpha/2)
             # resulting arc extrusion is s0*b/s
-            op1.e = sum([ s0*(circle.radius*alpha)/(2*circle.radius*sin(alpha/2))
+            op1.e = sum([ s0 * (circle.radius * alpha) / (2 * circle.radius * sin(alpha / 2))
                   for s0, alpha in zip(extrusions['filament'].values(), self.get_phase_diffs(circle))])
             op1.relative_e = True
         else:
             # absolute mode: fall-back to the original length
-            phase_diffs=self.get_phase_diffs(circle)
-            arc_lens=[ alpha*circle.radius for alpha in phase_diffs]
-            arc_extrusion_length=sum(arc_lens)*extrusions['avg']['ratio']
-            op1.e=self.queue[0].current_e+arc_extrusion_length
-            op1.relative_e=False
-            rel = arc_extrusion_length/extrusions['total']['filament']
+            phase_diffs = self.get_phase_diffs(circle)
+            arc_lens = [ alpha * circle.radius for alpha in phase_diffs]
+            arc_extrusion_length = sum(arc_lens) * extrusions['avg']['ratio']
+            op1.e = self.queue[count - 1].e
+            logger.info("E: %s" % op1.e)
+            op1.relative_e = False
+            rel = arc_extrusion_length / extrusions['total']['filament']
             if (rel - 1) > EXTRUSION_CORRECTION_LIMIT:
-                op2= Line()
-                op2.command="G92"
+                op2 = Line()
+                op2.command = "G92"
                 op2.e = op2.current_e = end_point.current_e
                 unsplit(op2)
                 op2.raw += "; generated as arc to path relation is %f" % rel
@@ -324,7 +337,7 @@ class GCodeArcOptimizerFilter(GCodeFilter):
         self.valid_circle = False
         result.append(last)
         logger.info(" generated arc from %s segments" % (count - 1))
-        logger.debug("arc is "+str(circle))
+        logger.debug("arc is " + str(circle))
         return result
 
     def opcode_filter(self, opcode):
@@ -334,7 +347,7 @@ class GCodeArcOptimizerFilter(GCodeFilter):
         :return: the resulting opcode or a list of resulting opcodes
         """
         if opcode.command is None and len(self.queue) > 0:
-            opcode.current_x  =self.queue[-1].current_x
+            opcode.current_x = self.queue[-1].current_x
             opcode.current_y = self.queue[-1].current_y
             opcode.current_z = self.queue[-1].current_z
             opcode.current_e = self.queue[-1].current_e
@@ -343,6 +356,8 @@ class GCodeArcOptimizerFilter(GCodeFilter):
         count = len(self.queue)
         if count > MIN_SEGMENTS:
             if not self.queue[-1].command in move_gcodes:
+                if self.queue[0].current_e == self.queue[1].current_e:
+                    self.valid_circle = False
                 if self.valid_circle:
                     # the last element inserted invalidated the circle, so process & flush
                     result = self.to_gcode()
@@ -354,6 +369,8 @@ class GCodeArcOptimizerFilter(GCodeFilter):
             else:
                 error, circle = self.queue_valid()
                 if error:
+                    if self.queue[0].current_e == self.queue[1].current_e:
+                       self.valid_circle = False
                     if self.valid_circle:
                         # the last element inserted invalidated the circle
                         result = self.to_gcode()
