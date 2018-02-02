@@ -31,7 +31,6 @@ EXTRUSION_CORRECTION_LIMIT = 0.01  # 1%, if the length of all segments deviates 
 
 logger = logging.getLogger('arc_optimizer')
 
-
 class Point(object):
     """
     an object representing a 2-dimensional point
@@ -321,7 +320,6 @@ class GCodeArcOptimizerFilter(GCodeFilter):
             arc_lens = [ alpha * circle.radius for alpha in phase_diffs]
             arc_extrusion_length = sum(arc_lens) * extrusions['avg']['ratio']
             op1.e = self.queue[count - 1].e
-            logger.info("E: %s" % op1.e)
             op1.relative_e = False
             rel = arc_extrusion_length / extrusions['total']['filament']
             if (rel - 1) > EXTRUSION_CORRECTION_LIMIT:
