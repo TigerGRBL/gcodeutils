@@ -1,6 +1,9 @@
 import argparse
 import logging
 import sys
+import os
+from multiprocessing import Process
+
 
 from gcodeutils.filter.relative_extrusion import GCodeToRelativeExtrusionFilter
 from gcodeutils.gcoder import GCode
@@ -8,6 +11,11 @@ from gcodeutils.filter.arc_optimizer import GCodeArcOptimizerFilter
 
 __author__ = 'Eyck Jentzsch <eyck@jepemuc.de>'
 
+def worker(tempFile):
+    logging.info("Parsing gcode...")
+    gcode = GCode(open(tempFile).readlines())
+    GCodeArcOptimizerFilter().filter(gcode)
+    gcode.write(open(tempFile, 'w') )
 
 def main():
     """command line entry point"""
@@ -33,19 +41,54 @@ def main():
         logging.root.setLevel(logging.INFO)
 
     logging.basicConfig(format="%(levelname)s:%(message)s")
+    
+    cpus = len(os.sched_getaffinity(0))
+    logging.info("Number of CPUs %s" % cpus)
+    
+    for line in args.infile:
+        if line.startswith(";LAYER_COUNT"):
+            layers = (int) (line.split(":")[1])
+            logging.info("Number of Layers: %s" % layers)
 
-    # read original GCode
-    gcode = GCode(args.infile.readlines())  # pylint: disable=redefined-outer-name
-
-    # First convert to relative extrusion
-    # GCodeToRelativeExtrusionFilter().filter(gcode)
-
-    # Then perform the stretching
-    GCodeArcOptimizerFilter().filter(gcode)
-
+    layersPerThread = (int) (layers / cpus) + 1
+    logging.info("Number of Layers Per Thread: %s" % layersPerThread)
+    
+    args.infile.seek(0)
+    
+    gcodes = []
+    tempFiles = []
+    procs = []
+    i = 0
+    tempFiles.append(open(args.infile.name + str(i), 'w'))
+    for line in args.infile:
+        if line.startswith(";LAYER:"):
+            layerNum = int(line.split(":")[1])
+            if layerNum > (i + 1) * layersPerThread:
+                tempFiles[i].close()
+                i += 1
+                tempFiles.append(open(args.infile.name + str(i), 'w'))
+        tempFiles[i].write(line)
+    tempFiles[i].close()
+        
+    for tempFile in tempFiles:
+        p = Process(target=worker, args=(tempFile.name,))
+        procs.append(p)
+        p.start()
+        
+    for proc in procs:
+        proc.join()
     # write back modified gcode
-    gcode.write(open(args.infile.name, 'w') if args.inplace is True and args.infile != sys.stdin else args.outfile)
-
-
+    outFile = open(args.infile.name, 'w') if args.inplace is True and args.infile != sys.stdin else args.outfile
+    
+    for tempFile in tempFiles:
+        tempFile = open(tempFile.name)
+        for line in tempFile:
+            outFile.write(line)
+        os.remove(tempFile.name)
+    outFile.flush()
+    outFile.close()
 if __name__ == "__main__":
     main()
+
+
+    
