@@ -2,6 +2,7 @@ import argparse
 import logging
 import sys
 import os
+import re
 from multiprocessing import Process
 
 
@@ -29,6 +30,7 @@ def main():
 
     parser.add_argument('--verbose', '-v', action='count', default=1, help='Verbose mode')
     parser.add_argument('--quiet', '-q', action='count', default=0, help='Quiet mode')
+    parser.add_argument('--compact', '-c', action='store_true', help='Removes white spaces and decimal places. Comments are not affected')
 
     args = parser.parse_args()
 
@@ -83,7 +85,18 @@ def main():
     for tempFile in tempFiles:
         tempFile = open(tempFile.name)
         for line in tempFile:
-            outFile.write(line)
+            if args.compact:
+                lines = line.split(";")
+                lines[0] = re.sub("(F\\d+)(\\.\\d+)", "\\1", lines[0])
+                lines[0] = re.sub(" ", "", lines[0])
+                if len(lines) > 1:
+                    line = lines[0] + ";" + lines[1]
+                else:
+                    line = lines[0]
+                outFile.write(line)
+            else:
+                outFile.write(line)
+            
         os.remove(tempFile.name)
     outFile.flush()
     outFile.close()
